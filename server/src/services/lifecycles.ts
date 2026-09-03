@@ -17,11 +17,19 @@ export function isVideoFile(file: Pick<UploadFile, 'mime'> | null | undefined): 
   return typeof file?.mime === 'string' && file.mime.startsWith('video/');
 }
 
-export function hashChanged(
-  prev: Pick<UploadFile, 'hash'> | null,
-  next: Pick<UploadFile, 'hash'>
-): boolean {
-  return !prev || prev.hash !== next.hash;
+/**
+ * True when an update's payload is a file *replace* rather than a metadata-only edit
+ * (renaming, alt text, folder move, ...). Strapi's upload service intentionally keeps the
+ * original `hash` value on replace, so the file's URL doesn't change — see
+ * `@strapi/upload` `services/upload.js`, `replace()`: "keep a constant hash and extension
+ * so the file url doesn't change when the file is replaced". `hash` is therefore only ever
+ * present in the update payload for a create-time write or a replace; a plain metadata
+ * update (`updateFileInfo`) never touches it. The plugin's own post-conversion write
+ * (`conversion.ts`) only ever sets `formats`, never `hash`, so gating on this key cannot
+ * loop back on itself.
+ */
+export function isReplace(data: Record<string, unknown> | undefined | null): boolean {
+  return !!data && 'hash' in data;
 }
 
 function asFile(value: unknown): UploadFile | null {
@@ -71,22 +79,11 @@ export function subscribeUploadLifecycles({ strapi, jobs, cleanup }: Deps): () =
       if (file && isVideoFile(file)) await enqueue(file);
     },
 
-    async beforeUpdate(event) {
-      if (event.params.data && 'hash' in event.params.data) {
-        try {
-          event.state.prev = await loadTarget(event);
-        } catch (error) {
-          strapi.log.error(`hls-video: could not load file before update: ${errorMessage(error)}`);
-        }
-      }
-    },
-
     async afterUpdate(event) {
       const next = asFile(event.result);
       if (!next || !isVideoFile(next)) return;
-      if (!(event.params.data && 'hash' in event.params.data)) return;
-      const prev = asFile(event.state.prev);
-      if (hashChanged(prev, next)) await enqueue(next);
+      if (!isReplace(event.params.data)) return;
+      await enqueue(next);
     },
 
     async beforeDelete(event) {

@@ -4,7 +4,7 @@ import type { UploadFile } from '../lib/types';
 import { createFakeStrapi, type FakeStrapi } from '../test/fake-strapi';
 import { createJobsService, type JobsService } from './jobs';
 import {
-  hashChanged,
+  isReplace,
   isVideoFile,
   registerUploadLifecycles,
   subscribeUploadLifecycles,
@@ -33,10 +33,14 @@ describe('filters', () => {
     expect(isVideoFile(null)).toBe(false);
   });
 
-  it('detects hash changes', () => {
-    expect(hashChanged({ hash: 'a' }, { hash: 'b' })).toBe(true);
-    expect(hashChanged({ hash: 'a' }, { hash: 'a' })).toBe(false);
-    expect(hashChanged(null, { hash: 'a' })).toBe(true);
+  it('detects a replace by the presence of `hash` in the update payload', () => {
+    // Strapi's upload service keeps the original hash value on replace (so the file's URL
+    // doesn't change), so the key is present but its value is unchanged — see isReplace's doc.
+    expect(isReplace({ hash: 'h1', formats: {} })).toBe(true);
+    expect(isReplace({ formats: { hls: {} } })).toBe(false);
+    expect(isReplace({ name: 'renamed.mp4' })).toBe(false);
+    expect(isReplace(undefined)).toBe(false);
+    expect(isReplace(null)).toBe(false);
   });
 });
 
@@ -72,27 +76,37 @@ describe('subscribeUploadLifecycles', () => {
     });
   });
 
-  it('enqueues the next version when the hash changes on update, not otherwise', async () => {
+  it('enqueues the next version on replace (hash key present), not on a metadata-only update', async () => {
     await fake.strapi.db.query<UploadFile>(FILE_UID).create({ data: video });
     const ready = await jobs.enqueue({ fileId: 1, fileHash: 'h1', version: 1 });
     await jobs.markReady(ready.id, { outputDir: 'hls/h1-v1', durationMs: 1 });
 
-    const e1 = event('beforeUpdate', {
+    // The plugin's own post-conversion write only ever sets `formats` — must not re-trigger.
+    const e1 = event('afterUpdate', {
       params: { where: { id: 1 }, data: { formats: { hls: {} } } },
-    });
-    await sub().beforeUpdate?.(e1);
-    await sub().afterUpdate?.({
-      ...e1,
-      action: 'afterUpdate',
       result: { ...video, formats: { hls: {} } },
     });
+    await sub().afterUpdate?.(e1);
     expect(fake.tables[JOB_UID]).toHaveLength(1);
 
-    const e2 = event('beforeUpdate', { params: { where: { id: 1 }, data: { hash: 'h2' } } });
-    await sub().beforeUpdate?.(e2);
-    await sub().afterUpdate?.({ ...e2, action: 'afterUpdate', result: { ...video, hash: 'h2' } });
+    // Real Strapi replace: `hash` is present in the payload but its value is unchanged
+    // (`@strapi/upload` keeps the original hash so the file URL stays stable), and `formats`
+    // is reset to `{}`. This must still enqueue a new version.
+    const e2 = event('afterUpdate', {
+      params: { where: { id: 1 }, data: { hash: 'h1', formats: {} } },
+      result: { ...video, formats: {} },
+    });
+    await sub().afterUpdate?.(e2);
     expect(fake.tables[JOB_UID]).toHaveLength(2);
-    expect(fake.tables[JOB_UID][1]).toMatchObject({ fileId: 1, fileHash: 'h2', version: 2 });
+    expect(fake.tables[JOB_UID][1]).toMatchObject({ fileId: 1, fileHash: 'h1', version: 2 });
+
+    // A plain metadata edit (rename, alt text, folder move) never touches `hash` or `formats`.
+    const e3 = event('afterUpdate', {
+      params: { where: { id: 1 }, data: { name: 'renamed.mp4' } },
+      result: { ...video, name: 'renamed.mp4' },
+    });
+    await sub().afterUpdate?.(e3);
+    expect(fake.tables[JOB_UID]).toHaveLength(2);
   });
 
   it('cleans up outputs and jobs on delete', async () => {
