@@ -4,7 +4,7 @@ import { normalizeConfig, type PluginConfig } from '../lib/config';
 import { LocalFfmpegConverter } from '../lib/converter';
 import { asStrapi, PLUGIN_NAME, type StrapiLike } from '../lib/strapi-types';
 import { ConversionError, createConversionService, type ConversionService } from './conversion';
-import { createJobsService, type JobsService } from './jobs';
+import type { JobsService } from './jobs';
 
 export interface WorkerState {
   running: boolean;
@@ -38,48 +38,55 @@ export function createWorker(deps: Deps): Worker {
   let busy = false;
   let currentJobId: number | null = null;
 
+  async function runTick(): Promise<void> {
+    if (!conversion) {
+      const job = await jobs.claimNext();
+      if (job) {
+        await jobs.markFailure(job.id, 'hls-video: ffmpeg binary not available on this host', {
+          retryable: false,
+          retries: config.retries,
+        });
+        strapi.log.error(`hls-video: job ${job.id} failed, ffmpeg not available`);
+      }
+      return;
+    }
+
+    const free = freeMemoryMb();
+    if (free < config.minFreeMemoryMb) {
+      strapi.log.debug(
+        `hls-video: skipping tick, free memory ${free} MB below ${config.minFreeMemoryMb} MB`
+      );
+      return;
+    }
+
+    const job = await jobs.claimNext();
+    if (!job) return;
+    currentJobId = job.id;
+    strapi.log.info(`hls-video: converting file ${job.fileId} (job ${job.id}, v${job.version})`);
+    try {
+      const result = await conversion.run(job);
+      await jobs.markReady(job.id, result);
+      strapi.log.info(
+        `hls-video: job ${job.id} ready in ${Math.round(result.durationMs / 1000)} s`
+      );
+    } catch (error) {
+      const retryable = error instanceof ConversionError ? error.retryable : true;
+      const message = error instanceof Error ? error.message : String(error);
+      const row = await jobs.markFailure(job.id, message, { retryable, retries: config.retries });
+      strapi.log.warn(
+        `hls-video: job ${job.id} ${row.status} (attempt ${row.attempts}): ${message}`
+      );
+    }
+  }
+
   async function tick(): Promise<void> {
     if (busy) return;
     busy = true;
     try {
-      if (!conversion) {
-        const job = await jobs.claimNext();
-        if (job) {
-          await jobs.markFailure(job.id, 'hls-video: ffmpeg binary not available on this host', {
-            retryable: false,
-            retries: config.retries,
-          });
-          strapi.log.error(`hls-video: job ${job.id} failed, ffmpeg not available`);
-        }
-        return;
-      }
-
-      const free = freeMemoryMb();
-      if (free < config.minFreeMemoryMb) {
-        strapi.log.debug(
-          `hls-video: skipping tick, free memory ${free} MB below ${config.minFreeMemoryMb} MB`
-        );
-        return;
-      }
-
-      const job = await jobs.claimNext();
-      if (!job) return;
-      currentJobId = job.id;
-      strapi.log.info(`hls-video: converting file ${job.fileId} (job ${job.id}, v${job.version})`);
-      try {
-        const result = await conversion.run(job);
-        await jobs.markReady(job.id, result);
-        strapi.log.info(
-          `hls-video: job ${job.id} ready in ${Math.round(result.durationMs / 1000)} s`
-        );
-      } catch (error) {
-        const retryable = error instanceof ConversionError ? error.retryable : true;
-        const message = error instanceof Error ? error.message : String(error);
-        const row = await jobs.markFailure(job.id, message, { retryable, retries: config.retries });
-        strapi.log.warn(
-          `hls-video: job ${job.id} ${row.status} (attempt ${row.attempts}): ${message}`
-        );
-      }
+      await runTick();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      strapi.log.error(`hls-video: worker tick failed: ${message}`);
     } finally {
       busy = false;
       currentJobId = null;

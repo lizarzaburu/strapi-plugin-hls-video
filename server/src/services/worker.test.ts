@@ -156,4 +156,23 @@ describe('worker', () => {
     expect(conversionOk.run).toHaveBeenCalledTimes(1);
     vi.useRealTimers();
   });
+
+  it('never rejects when claimNext throws', async () => {
+    const brokenJobs: JobsService = {
+      ...jobs,
+      claimNext: async () => {
+        throw new Error('db down');
+      },
+    };
+    const worker = createWorker({
+      strapi: fake.strapi,
+      jobs: brokenJobs,
+      config: DEFAULT_CONFIG,
+      conversion: conversionOk,
+      freeMemoryMb: () => 8000,
+    });
+    await expect(worker.tick()).resolves.toBeUndefined();
+    expect(fake.logs.some((l) => /error:.*tick failed.*db down/.test(l))).toBe(true);
+    expect(worker.state().busy).toBe(false);
+  });
 });
