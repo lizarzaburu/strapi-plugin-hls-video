@@ -52,7 +52,29 @@ pnpm add @lizarzaburu/strapi-plugin-hls-video
 
 Requirements: Strapi 5.50+, Node 20–22, the `local` upload provider, and CORS allowing your frontend origin (hls.js fetches playlists and segments). The ffmpeg/ffprobe binaries come from `ffmpeg-static` / `ffprobe-static`; no system package needed.
 
+On pnpm ≥ 10, the host project must allow these packages' install scripts to run (they download the ffmpeg/ffprobe binaries) — either add to the host's `package.json`:
+
+```json
+"pnpm": {
+  "onlyBuiltDependencies": ["ffmpeg-static", "ffprobe-static"]
+}
+```
+
+or run `pnpm approve-builds` and select them interactively. Without this the binaries never download and the plugin boots with "ffmpeg not found".
+
 On macOS, `os.freemem()` reports only truly free pages, so for local development set `minFreeMemoryMb` low, e.g. `128`, or the worker never starts. On Linux hosts the value reflects available memory and the default is fine.
+
+## Limitations
+
+- **One Strapi instance per database.** The worker claims jobs atomically (safe against
+  a second process claiming the same job), but boot recovery (`recoverStale()`, which
+  resets `processing` back to `queued`) assumes a single process was running before the
+  restart. Running PM2 cluster mode or multiple app instances against the same database
+  is not supported in v1 — each instance would reset the others' in-flight jobs.
+- **Timeouts are per job, not per rendition.** `maxEncodeMinutes` bounds the whole job
+  (probe + every rendition + poster), not each ffmpeg run individually.
+- **Local upload provider only.** Files stored on S3, Cloudinary, etc. are skipped with
+  a non-retryable error.
 
 ## Admin
 

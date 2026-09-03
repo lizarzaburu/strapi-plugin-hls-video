@@ -1,3 +1,4 @@
+# Requires npm trusted publishing configured for this repository/workflow.
 name: Publish Package to npm
 
 on:
