@@ -107,6 +107,26 @@ describe('subscribeUploadLifecycles', () => {
     });
     await sub().afterUpdate?.(e3);
     expect(fake.tables[JOB_UID]).toHaveLength(2);
+
+    // Same for updateFileInfo()'s other fields (alt text, caption, folder move) — its
+    // payload is always { name, alternativeText, caption, focalPoint, folder, folderPath },
+    // never `hash`.
+    const e4 = event('afterUpdate', {
+      params: {
+        where: { id: 1 },
+        data: {
+          name: 'renamed.mp4',
+          alternativeText: 'A clip',
+          caption: 'Caption',
+          focalPoint: null,
+          folder: 3,
+          folderPath: '/videos',
+        },
+      },
+      result: { ...video, name: 'renamed.mp4', folder: 3 },
+    });
+    await sub().afterUpdate?.(e4);
+    expect(fake.tables[JOB_UID]).toHaveLength(2);
   });
 
   it('cleans up outputs and jobs on delete', async () => {

@@ -12,12 +12,25 @@ Constraints: first-party only (no external video service), zero per-video work f
 
 Registered in `bootstrap` via `strapi.db.lifecycles.subscribe({ models: ['plugin::upload.file'] })`:
 
-| Event | Condition | Action |
-|---|---|---|
-| `afterCreate` | `mime` starts with `video/` | enqueue job `{ fileId, hash, version: 1 }` |
-| `afterUpdate` | `mime` is video and `hash` changed (media replaced) | enqueue job with `version + 1`; previous output dir is deleted after the new one is ready |
-| `afterUpdate` | `formats.hls` removed by someone else (e.g. Strapi reset on replace) and no job pending | no action; the replace path above covers it |
-| `beforeDelete` / `afterDelete` | any video | cancel pending job, delete every `hls/<hash>-v*` directory of that file |
+| Event                          | Condition                                                    | Action                                                                                    |
+| ------------------------------ | ------------------------------------------------------------ | ----------------------------------------------------------------------------------------- |
+| `afterCreate`                  | `mime` starts with `video/`                                  | enqueue job `{ fileId, hash, version: 1 }`                                                |
+| `afterUpdate`                  | `mime` is video and the update payload contains a `hash` key | enqueue job with `version + 1`; previous output dir is deleted after the new one is ready |
+| `beforeDelete` / `afterDelete` | any video                                                    | cancel pending job, delete every `hls/<hash>-v*` directory of that file                   |
+
+The `afterUpdate` trigger keys on the _presence_ of `hash` in the payload, not its value:
+Strapi's own upload service (`replace()`) deliberately keeps the original hash so the
+file's URL doesn't change when it's replaced, but it always sends `hash` along with the
+rest of the file's info in that same update — while a metadata-only edit
+(`updateFileInfo()`: rename, alt text, caption, folder move, ...) never includes `hash` at
+all, and the plugin's own post-conversion write only ever sends `formats`. So a `hash` key
+in the payload reliably means "this is a replace", even though its value never actually
+differs from before.
+
+**Known coupling:** this detection relies on internal, undocumented behaviour of
+`@strapi/upload`'s `replace()`/`updateFileInfo()` implementation (which fields each one
+sends), not on a public Strapi API. Re-check it against the actual `@strapi/upload` source
+on any Strapi upgrade.
 
 Files uploaded before the plugin was installed are not converted retroactively in v1.
 
@@ -27,17 +40,17 @@ Files uploaded before the plugin was installed are not converted retroactively i
 
 Hidden from the Content Manager (`pluginOptions.content-manager.visible = false`), no draft/publish, no i18n.
 
-| Field | Type | Notes |
-|---|---|---|
-| `fileId` | integer, indexed | id of `plugin::upload.file` |
-| `fileHash` | string | hash at enqueue time; identifies the source version |
-| `version` | integer | output directory suffix, increments per re-conversion |
-| `status` | enum `queued \| processing \| ready \| failed` | |
-| `attempts` | integer | automatic retries: 2 (3 runs total) |
-| `error` | text | last ffmpeg/plugin error, truncated to 2000 chars |
-| `outputDir` | string | relative to `public/uploads`, e.g. `hls/<hash>-v2` |
-| `startedAt`, `finishedAt` | datetime | |
-| `durationMs` | integer | encode wall time |
+| Field                     | Type                                           | Notes                                                 |
+| ------------------------- | ---------------------------------------------- | ----------------------------------------------------- |
+| `fileId`                  | integer, indexed                               | id of `plugin::upload.file`                           |
+| `fileHash`                | string                                         | hash at enqueue time; identifies the source version   |
+| `version`                 | integer                                        | output directory suffix, increments per re-conversion |
+| `status`                  | enum `queued \| processing \| ready \| failed` |                                                       |
+| `attempts`                | integer                                        | automatic retries: 2 (3 runs total)                   |
+| `error`                   | text                                           | last ffmpeg/plugin error, truncated to 2000 chars     |
+| `outputDir`               | string                                         | relative to `public/uploads`, e.g. `hls/<hash>-v2`    |
+| `startedAt`, `finishedAt` | datetime                                       |                                                       |
+| `durationMs`              | integer                                        | encode wall time                                      |
 
 ### Result on the file (`formats.hls`)
 
@@ -77,9 +90,11 @@ After a successful write the plugin emits `strapi.eventHub.emit('media.update', 
 
 ```ts
 interface Converter {
-  probe(input: string): Promise<{ width: number; height: number; duration: number; hasAudio: boolean }>
-  transcode(input: string, outDir: string, plan: EncodePlan, signal: AbortSignal): Promise<void>
-  poster(input: string, outFile: string, atSeconds: number): Promise<void>
+  probe(
+    input: string
+  ): Promise<{ width: number; height: number; duration: number; hasAudio: boolean }>;
+  transcode(input: string, outDir: string, plan: EncodePlan, signal: AbortSignal): Promise<void>;
+  poster(input: string, outFile: string, atSeconds: number): Promise<void>;
 }
 ```
 
@@ -89,11 +104,11 @@ v1 ships `LocalFfmpegConverter` (ffmpeg-static + ffprobe-static). The interface 
 
 Rendition ladder, filtered by source height (no upscaling; a 720p source gets 720 + 480):
 
-| Rendition | Scale | CRF | Max rate / buf | Audio |
-|---|---|---|---|---|
-| 1080p | `-2:1080` | 23 | 5000k / 10000k | AAC 128k if `hasAudio` |
-| 720p | `-2:720` | 24 | 2800k / 5600k | AAC 128k if `hasAudio` |
-| 480p | `-2:480` | 26 | 1400k / 2800k | AAC 96k if `hasAudio` |
+| Rendition | Scale     | CRF | Max rate / buf | Audio                  |
+| --------- | --------- | --- | -------------- | ---------------------- |
+| 1080p     | `-2:1080` | 23  | 5000k / 10000k | AAC 128k if `hasAudio` |
+| 720p      | `-2:720`  | 24  | 2800k / 5600k  | AAC 128k if `hasAudio` |
+| 480p      | `-2:480`  | 26  | 1400k / 2800k  | AAC 96k if `hasAudio`  |
 
 Common flags: `libx264 -preset fast -profile:v high -pix_fmt yuv420p -threads 2 -g 48 -keyint_min 48 -sc_threshold 0` (2 s GOP at 24 fps; GOP derived from probed fps × 2), `-movflags +faststart` not needed for HLS.
 

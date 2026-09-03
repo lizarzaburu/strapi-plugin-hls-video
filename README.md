@@ -22,7 +22,7 @@ Strapi 5 plugin that converts videos uploaded to the Media Library into HLS (ada
 
 4. Your frontend plays `formats.hls.url` when present (hls.js, native HLS on Safari) and falls back to the original file otherwise.
 
-Deleting the file removes its HLS output. Replacing it creates a new version directory, so long cache lifetimes are safe.
+Deleting the file removes its HLS output. Replacing it keeps the same hash but bumps the version, so the output moves to a new `<hash>-v<n>` directory — long cache lifetimes are safe.
 
 ## Install
 
