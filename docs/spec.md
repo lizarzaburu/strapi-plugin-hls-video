@@ -30,7 +30,11 @@ differs from before.
 **Known coupling:** this detection relies on internal, undocumented behaviour of
 `@strapi/upload`'s `replace()`/`updateFileInfo()` implementation (which fields each one
 sends), not on a public Strapi API. Re-check it against the actual `@strapi/upload` source
-on any Strapi upgrade.
+on any Strapi upgrade. Relatedly, `replace()`/`remove()` also pass every entry under the
+file's `formats` object — our `formats.hls` included — to `provider.delete()`; `hls` has no
+`hash`/`ext` (it isn't a real upload-provider format record), but the local provider's
+`delete()` builds a path from whatever fields are present and no-ops when that path doesn't
+exist, so this resolves harmlessly in practice.
 
 Files uploaded before the plugin was installed are not converted retroactively in v1.
 
@@ -83,7 +87,7 @@ After a successful write the plugin emits `strapi.eventHub.emit('media.update', 
 - Before starting a job: if `os.freemem()` < `minFreeMemoryMb` (default 1024), skip this tick and log at debug level. If the ffmpeg binary is missing, mark the job `failed` immediately with a clear message.
 - A job runs `probe → transcode renditions sequentially → poster → write master playlist check → update file → emit event`. Output is written to a temp directory `hls/.tmp-<hash>-v<n>` and renamed to its final name only when complete, so the public directory never contains a half-finished set.
 - Failure: increment `attempts`, keep `queued` until attempts are exhausted, then `failed`. Retry delay 60 s × attempts.
-- Timeouts: a single ffmpeg run is killed after `maxEncodeMinutes` (default 30) and counts as a failure.
+- Timeouts: `maxEncodeMinutes` (default 30) bounds the whole job — probe, every rendition's transcode and the poster together, not each ffmpeg run individually. A timed-out job is **not retried**: it goes straight to `failed`, regardless of remaining `attempts`.
 - Child processes are spawned with `os.setPriority(pid, 19)` (nice) — the coreutils `nice` binary is not available on all hosts.
 
 ## Converter interface
@@ -169,7 +173,19 @@ All keys optional; the validator rejects unknown renditions and non-positive num
 
 ## Admin UI
 
-Menu entry "HLS Video" (icon: play). One page: table of jobs, newest first — file name (link to Media Library entry), status badge, renditions, duration, encode time, error (expandable), created/finished. Row action "Convert again" (creates a new job with `version + 1`). Page header shows worker state (idle / processing `<file>`), ffmpeg availability and free memory. Polls every 5 s while the tab is open.
+Menu entry "HLS Video" (icon: play). One page: a table of jobs, newest first, with columns
+file (name, or a "file deleted" placeholder once the source file is gone), status badge
+(`queued` / `processing` / `ready` / `failed`), version, attempts, encode time, updated,
+error (raw message, not expandable), and actions. Row action "Convert again" creates a new
+job with `version + 1`; it is disabled when the file no longer exists, a retry for that row
+is already in flight, or the job's own status is `queued` or `processing` (nothing to
+re-run yet).
+
+The page header shows badges for worker state (idle, or "Converting job #<id>" while
+`busy`), ffmpeg/ffprobe availability, and free memory (`freeMemoryMb`), plus a manual
+refresh button. A failed list/retry request surfaces as a closable error alert; polling
+(every 5 s while the tab is open) keeps retrying and clears the alert once it succeeds
+again, so the last good table stays on screen instead of blanking out.
 
 Permission `plugin::hls-video.read` (view page) and `plugin::hls-video.retry` (convert again), assignable per admin role.
 
@@ -182,7 +198,7 @@ No content-api routes. Frontends read `formats.hls` from the media objects they 
 Type addition for media objects:
 
 ```ts
-formats?: { hls?: { url: string; poster: string; duration: number; width: number; height: number; hasAudio: boolean; renditions: number[]; version: number } } | null
+formats?: { hls?: { url: string; poster: string; duration: number; width: number; height: number; hasAudio: boolean; renditions: number[]; version: number; generatedAt: string } } | null
 ```
 
 Playback rule: if `formats.hls?.url` exists, play HLS (hls.js preferred, native HLS on iOS Safari); otherwise play `media.url` (progressive MP4) with `poster` absent. Background mode: muted, loop, autoplay, respects `prefers-reduced-motion` and data saver. Inline mode: controls, sound.

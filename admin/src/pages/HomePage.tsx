@@ -201,7 +201,10 @@ const HomePage = () => {
                       size="S"
                       variant="tertiary"
                       disabled={
-                        job.fileName === null || retrying === job.id || job.status === 'processing'
+                        job.fileName === null ||
+                        retrying === job.id ||
+                        job.status === 'processing' ||
+                        job.status === 'queued'
                       }
                       onClick={() => void retry(job.id)}
                     >
