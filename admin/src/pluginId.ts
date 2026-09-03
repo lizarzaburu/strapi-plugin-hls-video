@@ -1,1 +1,1 @@
-export const PLUGIN_ID = "hls-video";
+export const PLUGIN_ID = 'hls-video';

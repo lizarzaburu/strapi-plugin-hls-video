@@ -1,5 +1,5 @@
-import { PuzzlePiece } from "@strapi/icons";
+import { Play } from '@strapi/icons';
 
-const PluginIcon = () => <PuzzlePiece />;
+const PluginIcon = () => <Play />;
 
 export { PluginIcon };

@@ -1,21 +1,21 @@
-import { getTranslation } from "./utils/getTranslation";
-import { PLUGIN_ID } from "./pluginId";
-import { Initializer } from "./components/Initializer";
-import { PluginIcon } from "./components/PluginIcon";
+import { getTranslation } from './utils/getTranslation';
+import { PLUGIN_ID } from './pluginId';
+import { Initializer } from './components/Initializer';
+import { PluginIcon } from './components/PluginIcon';
 
-import type { StrapiApp } from "@strapi/strapi/admin";
+import type { StrapiApp } from '@strapi/strapi/admin';
 
-const plugin: StrapiApp["appPlugins"][string] = {
+const plugin: StrapiApp['appPlugins'][string] = {
   register(app) {
     app.addMenuLink({
       to: `plugins/${PLUGIN_ID}`,
       icon: PluginIcon,
       intlLabel: {
         id: `${PLUGIN_ID}.plugin.name`,
-        defaultMessage: PLUGIN_ID,
+        defaultMessage: 'HLS Video',
       },
-      Component: () => import("./pages/App"),
-      permissions: [],
+      Component: () => import('./pages/App'),
+      permissions: [{ action: `plugin::${PLUGIN_ID}.read`, subject: null }],
     });
 
     app.registerPlugin({
@@ -30,9 +30,7 @@ const plugin: StrapiApp["appPlugins"][string] = {
     return Promise.all(
       locales.map(async (locale) => {
         try {
-          const { default: data } = (await import(
-            `./translations/${locale}.json`
-          )) as {
+          const { default: data } = (await import(`./translations/${locale}.json`)) as {
             default: Record<string, string>;
           };
 
@@ -47,7 +45,7 @@ const plugin: StrapiApp["appPlugins"][string] = {
         } catch {
           return { data: {}, locale };
         }
-      }),
+      })
     );
   },
 };

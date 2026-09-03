@@ -1,1 +1,26 @@
-{}
+{
+  "plugin.name": "HLS Video",
+  "page.title": "HLS Video",
+  "page.subtitle": "Videos uploaded to the Media Library are converted to HLS in the background.",
+  "status.worker.idle": "Worker idle",
+  "status.worker.busy": "Converting job #{id}",
+  "status.ffmpeg.ok": "ffmpeg available",
+  "status.ffmpeg.missing": "ffmpeg not found – conversions will fail",
+  "status.memory": "{mb} MB free",
+  "table.file": "File",
+  "table.status": "Status",
+  "table.version": "Version",
+  "table.attempts": "Attempts",
+  "table.duration": "Encode time",
+  "table.updated": "Updated",
+  "table.error": "Error",
+  "table.actions": "Actions",
+  "table.empty": "No conversion jobs yet. Upload a video to the Media Library.",
+  "table.fileDeleted": "(file deleted)",
+  "action.retry": "Convert again",
+  "action.refresh": "Refresh",
+  "status.queued": "Queued",
+  "status.processing": "Processing",
+  "status.ready": "Ready",
+  "status.failed": "Failed"
+}
