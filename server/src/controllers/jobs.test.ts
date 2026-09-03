@@ -43,19 +43,17 @@ describe('jobs controller', () => {
     jobs = createJobsService({ strapi: fake.strapi });
     fake.services.jobs = jobs;
     fake.services.worker = worker;
-    await fake.strapi.db
-      .query<UploadFile>(FILE_UID)
-      .create({
-        data: {
-          name: 'a.mp4',
-          hash: 'h1',
-          ext: '.mp4',
-          mime: 'video/mp4',
-          url: '/uploads/h1.mp4',
-          provider: 'local',
-          formats: null,
-        },
-      });
+    await fake.strapi.db.query<UploadFile>(FILE_UID).create({
+      data: {
+        name: 'a.mp4',
+        hash: 'h1',
+        ext: '.mp4',
+        mime: 'video/mp4',
+        url: '/uploads/h1.mp4',
+        provider: 'local',
+        formats: null,
+      },
+    });
     await jobs.enqueue({ fileId: 1, fileHash: 'h1', version: 1 });
   });
 
