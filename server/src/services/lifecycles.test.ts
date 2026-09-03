@@ -1,9 +1,15 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FILE_UID, JOB_UID, type LifecycleEvent } from '../lib/strapi-types';
 import type { UploadFile } from '../lib/types';
 import { createFakeStrapi, type FakeStrapi } from '../test/fake-strapi';
 import { createJobsService, type JobsService } from './jobs';
-import { hashChanged, isVideoFile, subscribeUploadLifecycles } from './lifecycles';
+import {
+  hashChanged,
+  isVideoFile,
+  registerUploadLifecycles,
+  subscribeUploadLifecycles,
+  unregisterUploadLifecycles,
+} from './lifecycles';
 
 const video: UploadFile = {
   id: 1,
@@ -107,5 +113,56 @@ describe('subscribeUploadLifecycles', () => {
     await sub().beforeDelete?.(e);
     await sub().afterDelete?.({ ...e, action: 'afterDelete' });
     expect(cleanup).not.toHaveBeenCalled();
+  });
+
+  it('fails open when enqueue rejects on create', async () => {
+    vi.spyOn(jobs, 'enqueue').mockRejectedValueOnce(new Error('db down'));
+    await expect(
+      sub().afterCreate?.(event('afterCreate', { result: video }))
+    ).resolves.toBeUndefined();
+    expect(fake.logs.some((l) => /error:.*could not queue file 1/.test(l))).toBe(true);
+    expect(fake.tables[JOB_UID] ?? []).toHaveLength(0);
+  });
+
+  it('fails open when cleanup rejects on delete, still deleting job rows', async () => {
+    await fake.strapi.db.query<UploadFile>(FILE_UID).create({ data: video });
+    await jobs.enqueue({ fileId: 1, fileHash: 'h1', version: 1 });
+    cleanup.mockRejectedValueOnce(new Error('disk error'));
+    const e = event('beforeDelete', { params: { where: { id: 1 } } });
+    await sub().beforeDelete?.(e);
+    await expect(sub().afterDelete?.({ ...e, action: 'afterDelete' })).resolves.toBeUndefined();
+    expect(fake.tables[JOB_UID]).toHaveLength(0);
+    expect(fake.logs.some((l) => /error:.*cleanup failed for file 1/.test(l))).toBe(true);
+  });
+});
+
+describe('registerUploadLifecycles / unregisterUploadLifecycles', () => {
+  let fake: FakeStrapi;
+  let jobs: JobsService;
+  const cleanup = vi.fn(async () => undefined);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    fake = createFakeStrapi();
+    jobs = createJobsService({ strapi: fake.strapi });
+    unregisterUploadLifecycles();
+  });
+
+  afterEach(() => {
+    unregisterUploadLifecycles();
+  });
+
+  it('registers exactly one subscriber, unregisters it, and does not accumulate on double register', () => {
+    registerUploadLifecycles({ strapi: fake.strapi, jobs, cleanup });
+    expect(fake.subscribers).toHaveLength(1);
+
+    registerUploadLifecycles({ strapi: fake.strapi, jobs, cleanup });
+    expect(fake.subscribers).toHaveLength(1);
+
+    unregisterUploadLifecycles();
+    expect(fake.subscribers).toHaveLength(0);
+
+    unregisterUploadLifecycles();
+    expect(fake.subscribers).toHaveLength(0);
   });
 });

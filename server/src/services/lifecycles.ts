@@ -28,6 +28,10 @@ function asFile(value: unknown): UploadFile | null {
   return value && typeof value === 'object' && 'id' in value ? (value as UploadFile) : null;
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 interface Deps {
   strapi: StrapiLike;
   jobs: JobsService;
@@ -35,6 +39,11 @@ interface Deps {
   cleanup: (fileId: number) => Promise<void>;
 }
 
+/**
+ * Subscribes to `plugin::upload.file` lifecycles. No hook may throw into Strapi's upload
+ * request/response cycle: every side effect is wrapped so a jobs/cleanup failure is logged
+ * and swallowed rather than blocking the editor.
+ */
 export function subscribeUploadLifecycles({ strapi, jobs, cleanup }: Deps): () => void {
   const files = () => strapi.db.query<UploadFile>(FILE_UID);
 
@@ -45,9 +54,13 @@ export function subscribeUploadLifecycles({ strapi, jobs, cleanup }: Deps): () =
   };
 
   const enqueue = async (file: UploadFile) => {
-    const version = await jobs.nextVersion(file.id);
-    await jobs.enqueue({ fileId: file.id, fileHash: file.hash, version });
-    strapi.log.info(`hls-video: queued "${file.name}" (file ${file.id}, v${version})`);
+    try {
+      const version = await jobs.nextVersion(file.id);
+      await jobs.enqueue({ fileId: file.id, fileHash: file.hash, version });
+      strapi.log.info(`hls-video: queued "${file.name}" (file ${file.id}, v${version})`);
+    } catch (error) {
+      strapi.log.error(`hls-video: could not queue file ${file.id}: ${errorMessage(error)}`);
+    }
   };
 
   return strapi.db.lifecycles.subscribe({
@@ -60,7 +73,11 @@ export function subscribeUploadLifecycles({ strapi, jobs, cleanup }: Deps): () =
 
     async beforeUpdate(event) {
       if (event.params.data && 'hash' in event.params.data) {
-        event.state.prev = await loadTarget(event);
+        try {
+          event.state.prev = await loadTarget(event);
+        } catch (error) {
+          strapi.log.error(`hls-video: could not load file before update: ${errorMessage(error)}`);
+        }
       }
     },
 
@@ -73,15 +90,50 @@ export function subscribeUploadLifecycles({ strapi, jobs, cleanup }: Deps): () =
     },
 
     async beforeDelete(event) {
-      event.state.file = await loadTarget(event);
+      try {
+        event.state.file = await loadTarget(event);
+      } catch (error) {
+        strapi.log.error(`hls-video: could not load file before delete: ${errorMessage(error)}`);
+      }
     },
 
     async afterDelete(event) {
       const file = asFile(event.state.file);
       if (!file || !isVideoFile(file)) return;
-      await cleanup(file.id);
-      await jobs.deleteForFile(file.id);
-      strapi.log.info(`hls-video: removed HLS output of deleted file ${file.id}`);
+      try {
+        await cleanup(file.id);
+      } catch (error) {
+        strapi.log.error(`hls-video: cleanup failed for file ${file.id}: ${errorMessage(error)}`);
+      }
+      try {
+        await jobs.deleteForFile(file.id);
+        strapi.log.info(`hls-video: removed HLS output of deleted file ${file.id}`);
+      } catch (error) {
+        strapi.log.error(
+          `hls-video: could not delete jobs of file ${file.id}: ${errorMessage(error)}`
+        );
+      }
     },
   });
+}
+
+let unregister: (() => void) | null = null;
+
+/**
+ * Registers the upload lifecycle subscriber, storing the unsubscribe function so
+ * `unregisterUploadLifecycles` (called from `destroy.ts`) can release it. Calling this
+ * twice without an intervening unregister replaces the previous subscription instead of
+ * accumulating subscribers.
+ */
+export function registerUploadLifecycles(deps: Deps): void {
+  if (unregister) unregister();
+  unregister = subscribeUploadLifecycles(deps);
+}
+
+/** Releases the subscription registered by `registerUploadLifecycles`; no-op when none is active. */
+export function unregisterUploadLifecycles(): void {
+  if (unregister) {
+    unregister();
+    unregister = null;
+  }
 }
