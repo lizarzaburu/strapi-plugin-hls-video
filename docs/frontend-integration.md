@@ -28,7 +28,7 @@ While a conversion is queued, processing or failed, `formats.hls` is absent and 
 - Mode `background`: `muted`, `loop`, `playsinline`, no native controls, `object-cover`; start after the LCP window (`requestIdleCallback`); pause when scrolled out of view, resume when back; do not load the stream at all under `prefers-reduced-motion: reduce`, data saver or viewports below 768 px (poster only). Always render a visible pause/play toggle (WCAG 2.2.2: moving content longer than five seconds needs a user control).
 - Mode `inline`: poster, native controls, click to start, `preload="none"`, manifest attached only when the element enters the viewport; segments load on play.
 - Decorative background videos are `aria-hidden`; inline videos carry the media `alternativeText` as `aria-label` when set.
-- Cross-origin: hls.js fetches playlists and segments with `fetch`; the Strapi CORS middleware must allow the frontend origin (already the case in the base setup via `CORS_ORIGINS`).
+- Cross-origin: hls.js loads playlists and segments via XHR (or fetch); the Strapi CORS middleware must allow the frontend origin (already the case in the base setup via `CORS_ORIGINS`).
 
 ## Template changes (nuxt-strapi-site)
 
