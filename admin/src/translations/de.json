@@ -19,8 +19,11 @@
   "table.fileDeleted": "(Datei gelöscht)",
   "action.retry": "Neu konvertieren",
   "action.refresh": "Aktualisieren",
+  "action.close": "Schließen",
   "status.queued": "Wartend",
   "status.processing": "In Arbeit",
   "status.ready": "Fertig",
-  "status.failed": "Fehlgeschlagen"
+  "status.failed": "Fehlgeschlagen",
+  "error.load": "Konvertierungen konnten nicht geladen werden.",
+  "error.retry": "Konvertierung konnte nicht gestartet werden."
 }

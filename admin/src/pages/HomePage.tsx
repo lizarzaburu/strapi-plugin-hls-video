@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 
 import {
+  Alert,
   Badge,
   Box,
   Button,
@@ -23,6 +24,8 @@ import { getTranslation } from '../utils/getTranslation';
 
 const POLL_MS = 5000;
 
+type ErrorKind = 'load' | 'retry';
+
 const STATUS_COLOR: Record<JobView['status'], 'secondary' | 'alternative' | 'success' | 'danger'> =
   {
     queued: 'secondary',
@@ -30,6 +33,12 @@ const STATUS_COLOR: Record<JobView['status'], 'secondary' | 'alternative' | 'suc
     ready: 'success',
     failed: 'danger',
   };
+
+const formatDuration = (durationMs: number | null): string => {
+  if (durationMs === null) return '–';
+  if (durationMs < 1000) return '<1 s';
+  return `${Math.round(durationMs / 1000)} s`;
+};
 
 const HomePage = () => {
   const { formatMessage } = useIntl();
@@ -40,12 +49,17 @@ const HomePage = () => {
   const [status, setStatus] = useState<WorkerState | null>(null);
   const [loading, setLoading] = useState(true);
   const [retrying, setRetrying] = useState<number | null>(null);
+  const [error, setError] = useState<ErrorKind | null>(null);
 
   const load = useCallback(async () => {
     try {
       const [list, state] = await Promise.all([api.listJobs(), api.status()]);
       setJobs(list);
       setStatus(state);
+      setError(null);
+    } catch {
+      // Keep the last good data on screen; polling keeps retrying.
+      setError('load');
     } finally {
       setLoading(false);
     }
@@ -57,15 +71,20 @@ const HomePage = () => {
     return () => clearInterval(timer);
   }, [load]);
 
-  const retry = async (id: number) => {
-    setRetrying(id);
-    try {
-      await api.retry(id);
-      await load();
-    } finally {
-      setRetrying(null);
-    }
-  };
+  const retry = useCallback(
+    async (id: number) => {
+      setRetrying(id);
+      try {
+        await api.retry(id);
+        await load();
+      } catch {
+        setError('retry');
+      } finally {
+        setRetrying(null);
+      }
+    },
+    [api, load]
+  );
 
   if (loading) return <Page.Loading />;
 
@@ -85,6 +104,14 @@ const HomePage = () => {
             {t('action.refresh')}
           </Button>
         </Flex>
+
+        {error && (
+          <Box marginBottom={6}>
+            <Alert variant="danger" closeLabel={t('action.close')} onClose={() => setError(null)}>
+              {t(`error.${error}`)}
+            </Alert>
+          </Box>
+        )}
 
         {status && (
           <Flex gap={2} marginBottom={6} wrap="wrap">
@@ -156,9 +183,7 @@ const HomePage = () => {
                     <Typography>{job.attempts}</Typography>
                   </Td>
                   <Td>
-                    <Typography>
-                      {job.durationMs ? `${Math.round(job.durationMs / 1000)} s` : '–'}
-                    </Typography>
+                    <Typography>{formatDuration(job.durationMs)}</Typography>
                   </Td>
                   <Td>
                     <Typography>{new Date(job.updatedAt).toLocaleString()}</Typography>

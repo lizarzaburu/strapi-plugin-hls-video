@@ -1,3 +1,5 @@
+import { useCallback, useMemo, useRef } from 'react';
+
 import { useFetchClient } from '@strapi/strapi/admin';
 
 import { PLUGIN_ID } from './pluginId';
@@ -25,13 +27,39 @@ export interface WorkerState {
   freeMemoryMb: number;
 }
 
-export function useHlsApi() {
-  const { get, post } = useFetchClient();
+export interface HlsApi {
+  listJobs: () => Promise<JobView[]>;
+  status: () => Promise<WorkerState>;
+  retry: (id: number) => Promise<JobView>;
+}
 
-  return {
-    listJobs: async () => (await get<{ data: JobView[] }>(`/${PLUGIN_ID}/jobs`)).data.data,
-    status: async () => (await get<{ data: WorkerState }>(`/${PLUGIN_ID}/status`)).data.data,
-    retry: async (id: number) =>
-      (await post<{ data: JobView }>(`/${PLUGIN_ID}/jobs/${id}/retry`)).data.data,
-  };
+export function useHlsApi(): HlsApi {
+  // `useFetchClient()` returns a new `{ get, post, ... }` object on every
+  // render, and `HomePage` calls `useHlsApi()` on every render too. Reading
+  // `get`/`post` through a ref lets `listJobs`/`status`/`retry` keep a
+  // stable identity (empty dep arrays) regardless of that, so the object
+  // this hook returns is stable across renders — the polling `useEffect` in
+  // `HomePage` depends on it and must only run once per mount.
+  const client = useFetchClient();
+  const clientRef = useRef(client);
+  clientRef.current = client;
+
+  const listJobs = useCallback(
+    async () => (await clientRef.current.get<{ data: JobView[] }>(`/${PLUGIN_ID}/jobs`)).data.data,
+    []
+  );
+
+  const status = useCallback(
+    async () =>
+      (await clientRef.current.get<{ data: WorkerState }>(`/${PLUGIN_ID}/status`)).data.data,
+    []
+  );
+
+  const retry = useCallback(
+    async (id: number) =>
+      (await clientRef.current.post<{ data: JobView }>(`/${PLUGIN_ID}/jobs/${id}/retry`)).data.data,
+    []
+  );
+
+  return useMemo(() => ({ listJobs, status, retry }), [listJobs, status, retry]);
 }

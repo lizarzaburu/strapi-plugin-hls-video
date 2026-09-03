@@ -19,8 +19,11 @@
   "table.fileDeleted": "(file deleted)",
   "action.retry": "Convert again",
   "action.refresh": "Refresh",
+  "action.close": "Close",
   "status.queued": "Queued",
   "status.processing": "Processing",
   "status.ready": "Ready",
-  "status.failed": "Failed"
+  "status.failed": "Failed",
+  "error.load": "Could not load conversion jobs.",
+  "error.retry": "Could not start the conversion."
 }
