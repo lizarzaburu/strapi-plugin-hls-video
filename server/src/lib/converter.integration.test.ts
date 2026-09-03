@@ -58,7 +58,7 @@ describe.skipIf(!hasBins)('LocalFfmpegConverter (integration)', () => {
       ffmpeg: bins.ffmpeg as string,
       ffprobe: bins.ffprobe as string,
     });
-    const probe = await conv.probe(input);
+    const probe = await conv.probe(input, new AbortController().signal);
     expect(probe).toMatchObject({ width: 1280, height: 720, hasAudio: true });
     expect(probe.duration).toBeGreaterThan(2.5);
 
@@ -82,7 +82,7 @@ describe.skipIf(!hasBins)('LocalFfmpegConverter (integration)', () => {
     expect(playlist).toContain('#EXT-X-ENDLIST');
 
     const poster = path.join(dir, 'poster.jpg');
-    await conv.poster(input, poster, posterTime(probe.duration));
+    await conv.poster(input, poster, posterTime(probe.duration), new AbortController().signal);
     expect((await stat(poster)).size).toBeGreaterThan(1000);
   }, 60_000);
 });

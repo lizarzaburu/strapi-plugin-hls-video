@@ -154,16 +154,65 @@ describe('conversion service', () => {
     await expect(service.run(ghost)).rejects.toMatchObject({ retryable: false });
   });
 
-  it('aborts after maxEncodeMinutes', async () => {
+  it('aborts after maxEncodeMinutes and is not retryable', async () => {
     const file = await seedFile();
     const job = await seedJob(file);
+    const converter = createFakeConverter({ hang: true });
     const service = createConversionService({
       strapi: fake.strapi,
       jobs,
       config: { ...DEFAULT_CONFIG, maxEncodeMinutes: 0.0005 },
-      converter: createFakeConverter({ hang: true }),
+      converter,
     });
-    await expect(service.run(job)).rejects.toThrow(/aborted|timed out/);
+    await expect(service.run(job)).rejects.toMatchObject({
+      retryable: false,
+      message: expect.stringMatching(/timed out/),
+    });
+    // hang applies to probe too, so the timeout fires before any rendition starts.
+    expect(converter.calls).toEqual(['probe']);
+  });
+
+  it('cleans up and fails non-retryably when the file row is deleted mid-conversion', async () => {
+    const file = await seedFile();
+    const job = await seedJob(file);
+    const converter = createFakeConverter();
+    const deletingConverter = {
+      ...converter,
+      async transcode(...args: Parameters<typeof converter.transcode>) {
+        const table = fake.tables[FILE_UID];
+        const index = table.findIndex((r) => r.id === file.id);
+        if (index !== -1) table.splice(index, 1);
+        return converter.transcode(...args);
+      },
+    };
+    const service = createConversionService({
+      strapi: fake.strapi,
+      jobs,
+      config: DEFAULT_CONFIG,
+      converter: deletingConverter,
+    });
+
+    await expect(service.run(job)).rejects.toMatchObject({
+      retryable: false,
+      message: expect.stringMatching(/deleted during conversion/),
+    });
+    expect(await readdir(path.join(publicDir, 'uploads', 'hls')).catch(() => [])).toEqual([]);
+    expect(fake.events).toEqual([]);
+  });
+
+  it('rejects a source url that escapes the uploads directory', async () => {
+    const file = await seedFile({ url: '/uploads/../secret.mp4' });
+    const job = await seedJob(file);
+    const service = createConversionService({
+      strapi: fake.strapi,
+      jobs,
+      config: DEFAULT_CONFIG,
+      converter: createFakeConverter(),
+    });
+    await expect(service.run(job)).rejects.toMatchObject({
+      retryable: false,
+      message: expect.stringMatching(/unexpected upload url/),
+    });
   });
 
   it('deletes every output directory of a file', async () => {

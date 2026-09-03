@@ -19,8 +19,13 @@ export function createFakeConverter(
   const calls: string[] = [];
   return {
     calls,
-    async probe() {
+    async probe(_input: string, signal: AbortSignal) {
       calls.push('probe');
+      if (opts.hang) {
+        await new Promise<void>((_, reject) => {
+          signal.addEventListener('abort', () => reject(new Error('aborted')));
+        });
+      }
       return opts.probe ?? { width: 1920, height: 1080, duration: 10, fps: 25, hasAudio: true };
     },
     async transcode(
@@ -47,7 +52,7 @@ export function createFakeConverter(
       await writeFile(path.join(o.outDir, 'init.mp4'), Buffer.alloc(100));
       await writeFile(path.join(o.outDir, 'seg_000.m4s'), Buffer.alloc(size));
     },
-    async poster(_input: string, outFile: string) {
+    async poster(_input: string, outFile: string, _atSeconds: number, _signal: AbortSignal) {
       calls.push('poster');
       await writeFile(outFile, Buffer.alloc(10));
     },

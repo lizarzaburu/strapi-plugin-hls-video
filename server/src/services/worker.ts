@@ -37,6 +37,7 @@ export function createWorker(deps: Deps): Worker {
   let interval: ReturnType<typeof setInterval> | null = null;
   let busy = false;
   let currentJobId: number | null = null;
+  let currentController: AbortController | null = null;
 
   async function runTick(): Promise<void> {
     if (!conversion) {
@@ -62,20 +63,37 @@ export function createWorker(deps: Deps): Worker {
     const job = await jobs.claimNext();
     if (!job) return;
     currentJobId = job.id;
+    const controller = new AbortController();
+    currentController = controller;
     strapi.log.info(`hls-video: converting file ${job.fileId} (job ${job.id}, v${job.version})`);
     try {
-      const result = await conversion.run(job);
+      const result = await conversion.run(job, controller.signal);
+      const stillExists = await jobs.findById(job.id);
+      if (!stillExists) {
+        await conversion.removeOutputDir(result.outputDir);
+        strapi.log.info(
+          `hls-video: job ${job.id} row deleted during conversion, removed ${result.outputDir}`
+        );
+        return;
+      }
       await jobs.markReady(job.id, result);
       strapi.log.info(
         `hls-video: job ${job.id} ready in ${Math.round(result.durationMs / 1000)} s`
       );
     } catch (error) {
+      if (controller.signal.aborted) {
+        await jobs.requeue(job.id);
+        strapi.log.warn(`hls-video: job ${job.id} interrupted by shutdown, requeued`);
+        return;
+      }
       const retryable = error instanceof ConversionError ? error.retryable : true;
       const message = error instanceof Error ? error.message : String(error);
       const row = await jobs.markFailure(job.id, message, { retryable, retries: config.retries });
       strapi.log.warn(
         `hls-video: job ${job.id} ${row.status} (attempt ${row.attempts}): ${message}`
       );
+    } finally {
+      currentController = null;
     }
   }
 
@@ -104,6 +122,7 @@ export function createWorker(deps: Deps): Worker {
     stop() {
       if (interval) clearInterval(interval);
       interval = null;
+      currentController?.abort();
     },
     tick,
     state: () => ({

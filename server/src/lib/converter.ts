@@ -47,7 +47,7 @@ export const runProcess: RunFn = (bin, args, opts) =>
   });
 
 export interface Converter {
-  probe(input: string): Promise<ProbeResult>;
+  probe(input: string, signal: AbortSignal): Promise<ProbeResult>;
   transcode(
     input: string,
     rendition: Rendition,
@@ -55,7 +55,7 @@ export interface Converter {
     opts: TranscodeOptions,
     signal: AbortSignal
   ): Promise<void>;
-  poster(input: string, outFile: string, atSeconds: number): Promise<void>;
+  poster(input: string, outFile: string, atSeconds: number, signal: AbortSignal): Promise<void>;
 }
 
 export interface Binaries {
@@ -71,8 +71,11 @@ export class LocalFfmpegConverter implements Converter {
     private readonly run: RunFn = runProcess
   ) {}
 
-  async probe(input: string): Promise<ProbeResult> {
-    const result = await this.run(this.bins.ffprobe, probeArgs(input), { niceness: NICENESS });
+  async probe(input: string, signal: AbortSignal): Promise<ProbeResult> {
+    const result = await this.run(this.bins.ffprobe, probeArgs(input), {
+      signal,
+      niceness: NICENESS,
+    });
     if (result.code !== 0) {
       throw new Error(`hls-video: ffprobe exit code ${result.code}: ${result.stderr.trim()}`);
     }
@@ -97,8 +100,14 @@ export class LocalFfmpegConverter implements Converter {
     }
   }
 
-  async poster(input: string, outFile: string, atSeconds: number): Promise<void> {
+  async poster(
+    input: string,
+    outFile: string,
+    atSeconds: number,
+    signal: AbortSignal
+  ): Promise<void> {
     const result = await this.run(this.bins.ffmpeg, posterArgs(input, outFile, atSeconds), {
+      signal,
       niceness: NICENESS,
     });
     if (result.code !== 0) {

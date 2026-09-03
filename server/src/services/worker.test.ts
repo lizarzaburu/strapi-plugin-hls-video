@@ -16,6 +16,7 @@ describe('worker', () => {
       durationMs: 5,
     })),
     deleteOutputsForFile: vi.fn(async () => undefined),
+    removeOutputDir: vi.fn(async () => undefined),
   };
 
   beforeEach(async () => {
@@ -79,6 +80,7 @@ describe('worker', () => {
         .mockRejectedValueOnce(new ConversionError('transient', true))
         .mockRejectedValueOnce(new ConversionError('fatal', false)),
       deleteOutputsForFile: vi.fn(),
+      removeOutputDir: vi.fn(),
     };
     const worker = createWorker({
       strapi: fake.strapi,
@@ -104,6 +106,59 @@ describe('worker', () => {
     });
   });
 
+  it('removes the output dir and skips markReady when the job row was deleted mid-conversion', async () => {
+    const conversion: ConversionService = {
+      run: vi.fn(async () => ({ outputDir: 'hls/a-v1', durationMs: 5 })),
+      deleteOutputsForFile: vi.fn(),
+      removeOutputDir: vi.fn(async () => undefined),
+    };
+    const worker = createWorker({
+      strapi: fake.strapi,
+      jobs: {
+        ...jobs,
+        findById: async () => null, // the job row was deleted (e.g. afterDelete) while converting
+      },
+      config: DEFAULT_CONFIG,
+      conversion,
+      freeMemoryMb: () => 8000,
+    });
+    await expect(worker.tick()).resolves.toBeUndefined();
+    expect(conversion.removeOutputDir).toHaveBeenCalledWith('hls/a-v1');
+    expect(fake.logs.some((l) => /removed hls\/a-v1/.test(l))).toBe(true);
+  });
+
+  it('stop() aborts a running conversion and requeues the job without penalizing attempts', async () => {
+    let started: () => void = () => undefined;
+    const startedPromise = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const conversion: ConversionService = {
+      run: vi.fn(
+        (_job: JobRow, signal?: AbortSignal) =>
+          new Promise<{ outputDir: string; durationMs: number }>((_resolve, reject) => {
+            started();
+            signal?.addEventListener('abort', () => {
+              reject(new ConversionError('hls-video: conversion interrupted by shutdown', true));
+            });
+          })
+      ),
+      deleteOutputsForFile: vi.fn(),
+      removeOutputDir: vi.fn(),
+    };
+    const worker = createWorker({
+      strapi: fake.strapi,
+      jobs,
+      config: DEFAULT_CONFIG,
+      conversion,
+      freeMemoryMb: () => 8000,
+    });
+    const pending = worker.tick();
+    await startedPromise;
+    worker.stop();
+    await expect(pending).resolves.toBeUndefined();
+    expect(fake.tables[JOB_UID][0]).toMatchObject({ status: 'queued', attempts: 0 });
+  });
+
   it('never runs two jobs at once', async () => {
     let release: () => void = () => undefined;
     const slow: ConversionService = {
@@ -114,6 +169,7 @@ describe('worker', () => {
           })
       ),
       deleteOutputsForFile: vi.fn(),
+      removeOutputDir: vi.fn(),
     };
     await jobs.enqueue({ fileId: 2, fileHash: 'b', version: 1 });
     const worker = createWorker({

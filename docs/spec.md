@@ -91,14 +91,23 @@ After a successful write the plugin emits `strapi.eventHub.emit('media.update', 
 ```ts
 interface Converter {
   probe(
-    input: string
+    input: string,
+    signal: AbortSignal
   ): Promise<{ width: number; height: number; duration: number; hasAudio: boolean }>;
   transcode(input: string, outDir: string, plan: EncodePlan, signal: AbortSignal): Promise<void>;
-  poster(input: string, outFile: string, atSeconds: number): Promise<void>;
+  poster(input: string, outFile: string, atSeconds: number, signal: AbortSignal): Promise<void>;
 }
 ```
 
 v1 ships `LocalFfmpegConverter` (ffmpeg-static + ffprobe-static). The interface exists so a remote worker can be added later without touching the queue.
+
+Every step (probe, each rendition's transcode, poster) receives the same `AbortSignal`,
+combining two abort sources: the per-job `maxEncodeMinutes` timeout and an external signal
+the queue worker aborts on `stop()` (process shutdown). A timeout is not retried
+(`ConversionError(..., false)`); a shutdown-triggered abort requeues the job unchanged
+(`jobs.requeue`, no attempt penalty) so boot recovery re-runs it next start. Job source
+paths are resolved and required to stay inside `public/uploads/`; anything else is a
+non-retryable error.
 
 ## Encoding
 

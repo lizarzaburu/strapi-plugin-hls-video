@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { JOB_UID } from '../lib/strapi-types';
+import { JOB_UID, type QueryApi } from '../lib/strapi-types';
 import { createFakeStrapi, type FakeStrapi } from '../test/fake-strapi';
+import type { JobRow } from '../lib/types';
 import { createJobsService, type JobsService } from './jobs';
 
 describe('jobs service', () => {
@@ -36,6 +37,48 @@ describe('jobs service', () => {
     expect(claimed?.startedAt).toBeTruthy();
     expect((await jobs.claimNext())?.fileId).toBe(2);
     expect(await jobs.claimNext()).toBeNull();
+  });
+
+  it('atomically claims a job, skipping one that lost the race to another process', async () => {
+    await jobs.enqueue({ fileId: 1, fileHash: 'a', version: 1 });
+    await jobs.enqueue({ fileId: 2, fileHash: 'b', version: 1 });
+
+    let intercepted = false;
+    const originalQuery = fake.strapi.db.query;
+    fake.strapi.db.query = function query<T>(uid: string): QueryApi<T> {
+      const q = originalQuery<T>(uid);
+      if (uid !== JOB_UID) return q;
+      return {
+        ...q,
+        async findMany(params) {
+          const rows = await q.findMany(params);
+          if (!intercepted && rows.length) {
+            intercepted = true;
+            // Simulate another process claiming the first candidate between
+            // this findMany() and claimNext()'s subsequent updateMany().
+            const row = fake.tables[JOB_UID].find(
+              (r) => r.id === (rows[0] as unknown as JobRow).id
+            );
+            if (row) row.status = 'processing';
+          }
+          return rows;
+        },
+      };
+    };
+
+    const claimed = await jobs.claimNext();
+    expect(claimed?.fileId).toBe(2);
+  });
+
+  it('requeue puts a job back in the queue without touching attempts', async () => {
+    const job = await jobs.enqueue({ fileId: 1, fileHash: 'a', version: 1 });
+    await jobs.claimNext();
+    await jobs.requeue(job.id);
+    expect(fake.tables[JOB_UID][0]).toMatchObject({
+      status: 'queued',
+      startedAt: null,
+      attempts: 0,
+    });
   });
 
   it('skips jobs whose notBefore is in the future', async () => {

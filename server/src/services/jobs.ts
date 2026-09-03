@@ -20,6 +20,8 @@ export interface JobsService {
     error: string,
     opts: { retryable: boolean; retries: number; now?: Date }
   ): Promise<JobRow>;
+  /** Puts a job interrupted by worker.stop() back in the queue without counting an attempt. */
+  requeue(id: number): Promise<void>;
   recoverStale(): Promise<number>;
   list(limit?: number): Promise<JobRow[]>;
   findById(id: number): Promise<JobRow | null>;
@@ -65,18 +67,22 @@ export function createJobsService({ strapi }: { strapi: StrapiLike }): JobsServi
         orderBy: { createdAt: 'asc' },
         limit: 20,
       });
-      const ready = candidates.find(
-        (j) => !j.notBefore || new Date(j.notBefore).getTime() <= now.getTime()
-      );
-      if (!ready) return null;
-      return query().update({
-        where: { id: ready.id },
-        data: { status: 'processing', startedAt: now.toISOString() },
-      });
+      for (const candidate of candidates) {
+        if (candidate.notBefore && new Date(candidate.notBefore).getTime() > now.getTime()) {
+          continue;
+        }
+        const { count } = await query().updateMany({
+          where: { id: candidate.id, status: 'queued' },
+          data: { status: 'processing', startedAt: now.toISOString() },
+        });
+        if (count === 0) continue; // another process claimed it first, try the next candidate
+        return query().findOne({ where: { id: candidate.id } });
+      }
+      return null;
     },
 
     async markReady(id, result) {
-      return query().update({
+      const row = await query().update({
         where: { id },
         data: {
           status: 'ready',
@@ -87,6 +93,8 @@ export function createJobsService({ strapi }: { strapi: StrapiLike }): JobsServi
           finishedAt: new Date().toISOString(),
         },
       });
+      if (!row) throw new Error(`hls-video: job ${id} not found`);
+      return row;
     },
 
     async markFailure(id, error, opts) {
@@ -97,7 +105,7 @@ export function createJobsService({ strapi }: { strapi: StrapiLike }): JobsServi
       const message = error.slice(0, ERROR_LIMIT);
       const exhausted = !opts.retryable || attempts > opts.retries;
       if (exhausted) {
-        return query().update({
+        const row = await query().update({
           where: { id },
           data: {
             status: 'failed',
@@ -107,12 +115,24 @@ export function createJobsService({ strapi }: { strapi: StrapiLike }): JobsServi
             finishedAt: now.toISOString(),
           },
         });
+        if (!row) throw new Error(`hls-video: job ${id} not found`);
+        return row;
       }
       const notBefore = new Date(now.getTime() + RETRY_BASE_MS * attempts).toISOString();
-      return query().update({
+      const row = await query().update({
         where: { id },
         data: { status: 'queued', attempts, error: message, notBefore, startedAt: null },
       });
+      if (!row) throw new Error(`hls-video: job ${id} not found`);
+      return row;
+    },
+
+    async requeue(id) {
+      await query().update({
+        where: { id },
+        data: { status: 'queued', startedAt: null },
+      });
+      // No-op if the row is already gone (e.g. its file was deleted mid-conversion).
     },
 
     async recoverStale() {

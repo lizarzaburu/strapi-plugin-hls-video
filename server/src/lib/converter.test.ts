@@ -16,7 +16,8 @@ describe('LocalFfmpegConverter', () => {
       stderr: '',
     }));
     const conv = new LocalFfmpegConverter(bins, run);
-    await expect(conv.probe('/in.mp4')).resolves.toEqual({
+    const controller = new AbortController();
+    await expect(conv.probe('/in.mp4', controller.signal)).resolves.toEqual({
       width: 640,
       height: 360,
       duration: 3,
@@ -26,7 +27,7 @@ describe('LocalFfmpegConverter', () => {
     expect(run).toHaveBeenCalledWith(
       '/bin/ffprobe',
       expect.arrayContaining(['-show_streams', '/in.mp4']),
-      expect.anything()
+      expect.objectContaining({ signal: controller.signal, niceness: 19 })
     );
   });
 
@@ -52,11 +53,11 @@ describe('LocalFfmpegConverter', () => {
     const run: RunFn = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
     const conv = new LocalFfmpegConverter(bins, run);
     const controller = new AbortController();
-    await conv.poster('/in.mp4', '/out/poster.jpg', 1);
+    await conv.poster('/in.mp4', '/out/poster.jpg', 1, controller.signal);
     expect(run).toHaveBeenLastCalledWith(
       '/bin/ffmpeg',
       expect.arrayContaining(['-frames:v', '1']),
-      expect.objectContaining({ niceness: 19 })
+      expect.objectContaining({ signal: controller.signal, niceness: 19 })
     );
     const plan = planRenditions(
       { width: 640, height: 360, duration: 3, fps: 24, hasAudio: false },

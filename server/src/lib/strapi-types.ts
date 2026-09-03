@@ -9,7 +9,7 @@ export interface QueryApi<T> {
   findOne(params: FindParams): Promise<T | null>;
   findMany(params: FindParams): Promise<T[]>;
   create(params: { data: Partial<T> }): Promise<T>;
-  update(params: { where: Record<string, unknown>; data: Partial<T> }): Promise<T>;
+  update(params: { where: Record<string, unknown>; data: Partial<T> }): Promise<T | null>;
   updateMany(params: {
     where: Record<string, unknown>;
     data: Partial<T>;

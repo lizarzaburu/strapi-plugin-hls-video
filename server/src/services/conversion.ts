@@ -21,8 +21,9 @@ export class ConversionError extends Error {
 }
 
 export interface ConversionService {
-  run(job: JobRow): Promise<{ outputDir: string; durationMs: number }>;
+  run(job: JobRow, signal?: AbortSignal): Promise<{ outputDir: string; durationMs: number }>;
   deleteOutputsForFile(fileId: number, keepDir?: string): Promise<void>;
+  removeOutputDir(dir: string): Promise<void>;
 }
 
 interface Deps {
@@ -39,7 +40,12 @@ function localSourcePath(publicDir: string, file: UploadFile): string {
   if (!pathname.startsWith('/uploads/')) {
     throw new ConversionError(`hls-video: unexpected upload url "${file.url}"`, false);
   }
-  return path.join(publicDir, pathname);
+  const uploadsRoot = path.resolve(publicDir, 'uploads');
+  const resolved = path.resolve(publicDir, `.${pathname}`);
+  if (resolved !== uploadsRoot && !resolved.startsWith(uploadsRoot + path.sep)) {
+    throw new ConversionError(`hls-video: unexpected upload url "${file.url}"`, false);
+  }
+  return resolved;
 }
 
 async function dirBytes(dir: string): Promise<number> {
@@ -64,7 +70,10 @@ export function createConversionService(deps: Deps): ConversionService {
     }
   }
 
-  async function run(job: JobRow): Promise<{ outputDir: string; durationMs: number }> {
+  async function run(
+    job: JobRow,
+    externalSignal?: AbortSignal
+  ): Promise<{ outputDir: string; durationMs: number }> {
     const started = Date.now();
     const file = await files().findOne({ where: { id: job.fileId } });
     if (!file) throw new ConversionError(`hls-video: file ${job.fileId} no longer exists`, false);
@@ -82,18 +91,27 @@ export function createConversionService(deps: Deps): ConversionService {
     const finalAbs = path.join(uploadsRoot(), finalDir);
 
     const controller = new AbortController();
+    let interrupted = false;
     const timer = setTimeout(() => controller.abort(), config.maxEncodeMinutes * 60_000);
+    const onExternalAbort = () => {
+      interrupted = true;
+      controller.abort();
+    };
+    if (externalSignal) {
+      if (externalSignal.aborted) onExternalAbort();
+      else externalSignal.addEventListener('abort', onExternalAbort);
+    }
 
     try {
       await rm(tmpAbs, { recursive: true, force: true });
       await mkdir(tmpAbs, { recursive: true });
 
-      const probe = await converter.probe(input);
+      const probe = await converter.probe(input, controller.signal);
       const plan = planRenditions(probe, config);
       const stats: RenditionStats[] = [];
 
       for (const rendition of plan.renditions) {
-        if (controller.signal.aborted) throw new Error('hls-video: encode timed out');
+        if (controller.signal.aborted) throw new Error('hls-video: conversion aborted');
         const outDir = path.join(tmpAbs, rendition.dirName);
         await mkdir(outDir, { recursive: true });
         await converter.transcode(
@@ -111,7 +129,12 @@ export function createConversionService(deps: Deps): ConversionService {
         stats.push({ rendition, bytes: await dirBytes(outDir) });
       }
 
-      await converter.poster(input, path.join(tmpAbs, 'poster.jpg'), posterTime(probe.duration));
+      await converter.poster(
+        input,
+        path.join(tmpAbs, 'poster.jpg'),
+        posterTime(probe.duration),
+        controller.signal
+      );
       await writeFile(
         path.join(tmpAbs, 'master.m3u8'),
         buildMasterPlaylist(stats, plan, probe.duration)
@@ -133,6 +156,13 @@ export function createConversionService(deps: Deps): ConversionService {
       };
       const formats = { ...(file.formats ?? {}), hls };
       const updated = await files().update({ where: { id: file.id }, data: { formats } });
+      if (!updated) {
+        await rm(finalAbs, { recursive: true, force: true });
+        throw new ConversionError(
+          `hls-video: file ${file.id} was deleted during conversion`,
+          false
+        );
+      }
 
       await deleteOutputsForFile(file.id, finalDir);
       await strapi.eventHub.emit('media.update', { media: updated });
@@ -142,16 +172,25 @@ export function createConversionService(deps: Deps): ConversionService {
       await rm(tmpAbs, { recursive: true, force: true });
       if (error instanceof ConversionError) throw error;
       const message = error instanceof Error ? error.message : String(error);
-      throw new ConversionError(
-        controller.signal.aborted
-          ? `hls-video: encode timed out after ${config.maxEncodeMinutes} min (${message})`
-          : message,
-        true
-      );
+      if (controller.signal.aborted) {
+        if (interrupted) {
+          throw new ConversionError('hls-video: conversion interrupted by shutdown', true);
+        }
+        throw new ConversionError(
+          `hls-video: encode timed out after ${config.maxEncodeMinutes} min (${message})`,
+          false
+        );
+      }
+      throw new ConversionError(message, true);
     } finally {
       clearTimeout(timer);
+      if (externalSignal) externalSignal.removeEventListener('abort', onExternalAbort);
     }
   }
 
-  return { run, deleteOutputsForFile };
+  async function removeOutputDir(dir: string): Promise<void> {
+    await rm(path.join(uploadsRoot(), dir), { recursive: true, force: true });
+  }
+
+  return { run, deleteOutputsForFile, removeOutputDir };
 }

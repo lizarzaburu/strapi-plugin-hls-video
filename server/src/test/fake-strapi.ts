@@ -59,7 +59,7 @@ function makeQuery(table: Row[], nextId: () => number, now: () => string): Query
     },
     async update({ where, data }) {
       const row = table.find((r) => matches(r, where));
-      if (!row) throw new Error('row not found');
+      if (!row) return null;
       Object.assign(row, data, { updatedAt: now() });
       return row;
     },
