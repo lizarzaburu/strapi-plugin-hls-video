@@ -1,4 +1,8 @@
+import { DEFAULT_CONFIG, normalizeConfig } from '../lib/config';
+
 export default {
-  default: {},
-  validator() {},
+  default: DEFAULT_CONFIG,
+  validator(config: unknown) {
+    normalizeConfig(config);
+  },
 };
